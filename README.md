@@ -1,10 +1,15 @@
 # mirea-2fa-parser
 
-Скрипт автоматически забирает 2FA-коды из писем `sso@mirea.ru` по IMAP и пишет их в Google Таблицу в реальном времени.
+Скрипт забирает 2FA-коды из писем `sso@mirea.ru` в реальном времени и пишет их в Google Таблицу.
 
-- **Протокол:** IMAP IDLE — сервер пушит уведомление, задержка ~1 сек
-- **Масштаб:** один поток на аккаунт, 30 человек ≈ 150 MB RAM
-- **Деплой:** один скрипт `install.sh` — сам ставит зависимости, создаёт конфиг и поднимает systemd
+**Архитектура:** все участники пересылают письма от `sso@mirea.ru` на один центральный ящик. Скрипт держит одно IMAP IDLE-соединение с ним и при появлении каждого нового письма определяет получателя по заголовку `To:`, находит его строку в таблице и вписывает код.
+
+```
+sso@mirea.ru → ivanov@edu.mirea.ru ──┐
+sso@mirea.ru → petrov@edu.mirea.ru ──┼──▶ central@mail.ru ──▶ скрипт ──▶ таблица
+sso@mirea.ru → sidorov@edu.mirea.ru ─┘
+                                         1 соединение    ~1 сек задержки
+```
 
 ---
 
@@ -12,28 +17,36 @@
 
 | A | B | C | D | E |
 |---|---|---|---|---|
-| ФИО | Email (mail.ru) | App Password | **Код** ← скрипт | **Время** ← скрипт |
+| ФИО | **@edu.mirea.ru** | *(не нужен)* | **Код** ← скрипт | **Время** ← скрипт |
+
+> Столбец B — адрес `@edu.mirea.ru`, именно на него МИРЭА отправляет код.  
+> App-пароли от личных ящиков в таблице **не хранятся**.
 
 ---
 
-## Подготовка (один раз)
+## Подготовка
 
-### 1. App Password для Mail.ru
+### 1. Центральный ящик mail.ru
 
-Mail.ru не принимает основной пароль через IMAP — нужен отдельный пароль приложения.
+Заведи (или используй существующий) ящик `@mail.ru`, на который все будут пересылать коды.
 
-1. Войди в аккаунт → **Настройки** → **Безопасность**
-2. **Пароли для внешних приложений** → **Добавить**
-3. Название: `IMAP parser` → скопируй сгенерированный пароль
-4. Вставь его в столбец **C** таблицы
+Создай для него **App Password** (не основной пароль):
+1. Настройки аккаунта → **Безопасность**
+2. **Пароли для внешних приложений** → **Добавить** → скопируй пароль
 
-### 2. Google Service Account (JSON-ключ)
+### 2. Пересылка у каждого участника
 
-1. Открой [console.cloud.google.com](https://console.cloud.google.com)
-2. Создай проект → **APIs & Services → Enable APIs** → включи **Google Sheets API**
+Каждый участник настраивает фильтр в своём `@edu.mirea.ru` или привязанном `@mail.ru`:
+
+> **Письма от:** `sso@mirea.ru` → **Переслать на:** `central@mail.ru`
+
+### 3. Google Service Account
+
+1. [console.cloud.google.com](https://console.cloud.google.com) → создай проект
+2. **APIs & Services → Enable APIs** → включи **Google Sheets API**
 3. **Credentials → Create Credentials → Service Account**
-4. В сервис-аккаунте: вкладка **Keys → Add Key → JSON** → скачай файл
-5. Открой Google Таблицу → **Поделиться** → добавь email сервис-аккаунта с правами **Редактор**
+4. Вкладка **Keys → Add Key → JSON** → скачай файл
+5. В таблице: **Поделиться** → добавь email сервис-аккаунта с правами **Редактор**
 
 ---
 
@@ -46,72 +59,47 @@ chmod +x install.sh
 ./install.sh
 ```
 
-Скрипт сделает всё сам:
+Три шага в интерактивном режиме:
 
 ```
-╔══════════════════════════════════════════════╗
-║         mirea-2fa-parser  installer          ║
-╚══════════════════════════════════════════════╝
+Шаг 1 из 3: JSON-ключ  →  вставляешь содержимое файла в терминал (Ctrl+D)
+Шаг 2 из 3: Центральный ящик  →  email + app password
+Шаг 3 из 3: ID таблицы  →  вставляешь из URL
 
-  → Проверяю Python 3...
-  ✓ Python: Python 3.11.2
-  → Устанавливаю зависимости...
-  ✓ gspread, google-auth установлены
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- Шаг 1 из 2: JSON-ключ сервис-аккаунта Google
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Вставь содержимое JSON-ключа, затем Ctrl+D:
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- Шаг 2 из 2: ID Google Таблицы
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Введи ID таблицы: 1p04Dq6tQ...
-
-  ✓ Доступ к таблице подтверждён
+  ✓ IMAP: OK
+  ✓ Таблица: OK (31 строк)
   ✓ Сервис запущен и добавлен в автозапуск
-
-╔══════════════════════════════════════════════╗
-║             Установка завершена!             ║
-╚══════════════════════════════════════════════╝
 ```
 
 ---
 
-## Управление сервисом
+## Управление
 
 ```bash
-# Логи в реальном времени
-sudo journalctl -u mirea-parser -f
-
-# Статус
-sudo systemctl status mirea-parser
-
-# Остановить / запустить / перезапустить
-sudo systemctl stop    mirea-parser
-sudo systemctl start   mirea-parser
-sudo systemctl restart mirea-parser
+sudo journalctl -u mirea-parser -f      # логи в реальном времени
+sudo systemctl status  mirea-parser     # статус
+sudo systemctl restart mirea-parser     # перезапуск (после правки config.ini)
+sudo systemctl stop    mirea-parser     # остановить
 ```
 
 ---
 
 ## Конфиг
 
-После установки настройки хранятся в `config.ini` — редактировать Python-код не нужно:
+`config.ini` создаётся автоматически через `install.sh`. При необходимости отредактировать вручную:
 
 ```ini
 [mirea]
-json_key       = /home/user/.config/mirea-parser/key.json
-spreadsheet_id = 1p04Dq6tQXRD13s4I0msoa5GBPvdp6ILVnfZmrpy0j-Y
-sender         = sso@mirea.ru
-imap_host      = imap.mail.ru
-imap_port      = 993
+central_email    = central@mail.ru
+central_password = app_password
+json_key         = /home/user/.config/mirea-parser/key.json
+spreadsheet_id   = 1p04Dq6tQ...
+sender           = sso@mirea.ru
+imap_host        = imap.mail.ru
+imap_port        = 993
 ```
 
-После изменения конфига — перезапустить сервис:
-```bash
-sudo systemctl restart mirea-parser
-```
+После изменений: `sudo systemctl restart mirea-parser`
 
 ---
 
@@ -119,17 +107,6 @@ sudo systemctl restart mirea-parser
 
 | Параметр | Минимум |
 |----------|---------|
-| RAM | 256 MB |
-| CPU | любой |
+| RAM | 128 MB (одно соединение вместо 30) |
 | OS | Ubuntu 22.04 / Debian 12 |
 | Python | 3.8+ |
-
-30 аккаунтов ≈ 150 MB RAM, CPU ≈ 0% в простое.
-
----
-
-## Безопасность
-
-- Пароли от почты хранятся **только в Google Таблице**, не в коде
-- JSON-ключ сохраняется с правами `600` (только владелец)
-- SSH на VPS: рекомендуется вход только по ключу

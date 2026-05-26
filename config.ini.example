@@ -1,5 +1,9 @@
 [mirea]
-; Путь к JSON-ключу сервис-аккаунта Google
+; Центральный mail.ru ящик — все пересылки сюда
+central_email    = central@mail.ru
+central_password = app_password_от_mail.ru
+
+; JSON-ключ сервис-аккаунта Google (путь на сервере)
 json_key = /home/user/.config/mirea-parser/key.json
 
 ; ID Google Таблицы (из URL между /d/ и /edit)
