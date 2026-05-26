@@ -5,7 +5,6 @@ from email.header import decode_header, make_header
 import configparser
 import re
 import time
-import socket
 import gspread
 from google.oauth2.service_account import Credentials
 from pathlib import Path
@@ -28,9 +27,10 @@ JSON_KEY         = CFG["json_key"]
 SPREADSHEET_ID   = CFG["spreadsheet_id"]
 CENTRAL_EMAIL    = CFG["central_email"]
 CENTRAL_PASSWORD = CFG["central_password"]
-SENDER           = CFG.get("sender",    "sso@mirea.ru")
-IMAP_HOST        = CFG.get("imap_host", "imap.mail.ru")
+SENDER           = CFG.get("sender",       "sso@mirea.ru")
+IMAP_HOST        = CFG.get("imap_host",    "imap.mail.ru")
 IMAP_PORT        = int(CFG.get("imap_port", "993"))
+POLL_INTERVAL    = int(CFG.get("poll_interval", "5"))   # секунд между проверками
 
 
 # ── Google Sheets ──────────────────────────────────────────────────────────────
@@ -117,72 +117,53 @@ def process_new(mail, known_last: bytes | None) -> bytes | None:
     return new_ids[-1]
 
 
-# ── Главный цикл ───────────────────────────────────────────────────────────────
+# ── Главный цикл (поллинг) ────────────────────────────────────────────────────
+
+def connect() -> imaplib.IMAP4_SSL:
+    mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+    mail.login(CENTRAL_EMAIL, CENTRAL_PASSWORD)
+    mail.select("INBOX")
+    return mail
+
 
 def main():
     print(f"Центральный ящик: {CENTRAL_EMAIL}")
+    print(f"Интервал проверки: {POLL_INTERVAL} сек")
     print("Нажмите Ctrl+C для остановки.\n")
 
+    mail       = None
+    known_last = None
+
     while True:
-        mail = None
         try:
-            print("Подключение к IMAP...")
-            mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
-            mail.login(CENTRAL_EMAIL, CENTRAL_PASSWORD)
-            mail.select("INBOX")
+            # Переподключаемся если нет соединения
+            if mail is None:
+                print("Подключение к IMAP...")
+                mail = connect()
+                # Запоминаем текущий последний ID — старые письма не трогаем
+                _, ids     = mail.search(None, f'FROM "{SENDER}"')
+                known_last = ids[0].split()[-1] if ids[0] else None
+                print(f"Подключён. Жду новые письма (каждые {POLL_INTERVAL} сек)...\n")
 
-            # Текущая база — запоминаем последний ID чтобы не дублировать
-            _, ids   = mail.search(None, f'FROM "{SENDER}"')
-            known_last = ids[0].split()[-1] if ids[0] else None
+            # Проверяем IMAP соединение (NOOP)
+            mail.noop()
 
-            print("Ожидание писем (IMAP IDLE)...")
-
-            while True:
-                # ── IDLE ──
-                tag = mail._new_tag().decode()
-                mail.send(f"{tag} IDLE\r\n".encode())
-
-                resp = mail.readline()
-                if b"+" not in resp:
-                    raise ConnectionError(f"Сервер не поддерживает IDLE: {resp!r}")
-
-                # Ждём уведомление; через 29 мин переотправляем IDLE сами
-                mail.socket().settimeout(29 * 60)
-                got_new = False
-                try:
-                    while True:
-                        line = mail.readline()
-                        if b"EXISTS" in line or b"RECENT" in line:
-                            got_new = True
-                            break
-                        if b"BYE" in line:
-                            raise ConnectionError("Сервер закрыл соединение (BYE)")
-                except socket.timeout:
-                    pass
-                finally:
-                    mail.socket().settimeout(None)
-
-                # Выходим из IDLE
-                mail.send(b"DONE\r\n")
-                while True:
-                    line = mail.readline()
-                    if tag.encode() in line:
-                        break
-
-                if got_new:
-                    known_last = process_new(mail, known_last)
+            # Ищем новые письма
+            known_last = process_new(mail, known_last)
 
         except Exception as exc:
             print(f"Ошибка: {exc}")
-        finally:
             if mail:
                 try:
                     mail.logout()
                 except Exception:
                     pass
+            mail = None
+            print("Переподключение через 10 сек...\n")
+            time.sleep(10)
+            continue
 
-        print("Переподключение через 10 сек...\n")
-        time.sleep(10)
+        time.sleep(POLL_INTERVAL)
 
 
 if __name__ == "__main__":
