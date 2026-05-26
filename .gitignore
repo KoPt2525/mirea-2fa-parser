@@ -1,0 +1,10 @@
+# Секреты — никогда не коммитить
+*.json
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/

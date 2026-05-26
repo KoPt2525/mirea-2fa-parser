@@ -1,0 +1,14 @@
+[Unit]
+Description=MIREA 2FA Code Parser
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /root/parser.py
+WorkingDirectory=/root
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
