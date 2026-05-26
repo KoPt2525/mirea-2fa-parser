@@ -1,0 +1,11 @@
+[mirea]
+; Путь к JSON-ключу сервис-аккаунта Google
+json_key = /home/user/.config/mirea-parser/key.json
+
+; ID Google Таблицы (из URL между /d/ и /edit)
+spreadsheet_id = ВАШ_ID_ТАБЛИЦЫ
+
+; Опциональные настройки (менять не нужно)
+sender    = sso@mirea.ru
+imap_host = imap.mail.ru
+imap_port = 993

@@ -2,25 +2,39 @@ import imaplib
 import email
 import email.utils
 from email.header import decode_header, make_header
+import configparser
 import re
 import threading
 import time
 import socket
 import gspread
 from google.oauth2.service_account import Credentials
+from pathlib import Path
 
-# Настройки
-JSON_KEY      = "/Users/ilakoptilin/Downloads/super-tablitsa-bc518699c995.json"
-SPREADSHEET_ID = "1p04Dq6tQXRD13s4I0msoa5GBPvdp6ILVnfZmrpy0j-Y"
-SENDER        = "sso@mirea.ru"
-IMAP_HOST     = "imap.mail.ru"
-IMAP_PORT     = 993
+# ── Конфиг ────────────────────────────────────────────────────────────────────
+
+def load_config():
+    cfg = configparser.ConfigParser()
+    cfg_path = Path(__file__).parent / "config.ini"
+    if not cfg_path.exists():
+        raise FileNotFoundError(
+            f"Файл config.ini не найден: {cfg_path}\n"
+            "Запустите ./install.sh для настройки."
+        )
+    cfg.read(cfg_path)
+    return cfg["mirea"]
+
+CFG            = load_config()
+JSON_KEY       = CFG["json_key"]
+SPREADSHEET_ID = CFG["spreadsheet_id"]
+SENDER         = CFG.get("sender", "sso@mirea.ru")
+IMAP_HOST      = CFG.get("imap_host", "imap.mail.ru")
+IMAP_PORT      = int(CFG.get("imap_port", "993"))
 
 
 # ── Google Sheets ──────────────────────────────────────────────────────────────
 
 def get_sheet():
-    """Новое подключение к таблице (вызывать каждый раз при записи)."""
     creds = Credentials.from_service_account_file(
         JSON_KEY,
         scopes=["https://www.googleapis.com/auth/spreadsheets"],
@@ -31,7 +45,6 @@ def get_sheet():
 # ── Парсинг письма ─────────────────────────────────────────────────────────────
 
 def parse_message(msg):
-    """Извлекаем 6-значный код и время из объекта email.message."""
     subject = str(make_header(decode_header(msg["Subject"])))
     match   = re.match(r"(\d{6})", subject)
     code    = match.group(1) if match else None
@@ -45,18 +58,10 @@ def parse_message(msg):
 # ── IMAP IDLE worker ───────────────────────────────────────────────────────────
 
 def idle_worker(email_addr: str, password: str, row_idx: int, sheet_lock: threading.Lock):
-    """
-    Бесконечный цикл для одного аккаунта.
-    Держит соединение с IMAP и использует IDLE-команду — сервер сам
-    пушит `* N EXISTS` при появлении нового письма (~1 сек задержки).
-    При разрыве автоматически переподключается.
-    """
-
     def write_to_sheet(code: str, time_str: str):
         with sheet_lock:
             try:
                 sheet = get_sheet()
-                # Один запрос вместо двух — D и E одновременно
                 sheet.update(range_name=f"D{row_idx}:E{row_idx}", values=[[code, time_str]])
                 print(f"[{email_addr}] ✓ Код: {code}  Время: {time_str}")
             except Exception as exc:
@@ -70,24 +75,19 @@ def idle_worker(email_addr: str, password: str, row_idx: int, sheet_lock: thread
             mail.login(email_addr, password)
             mail.select("INBOX")
 
-            # Запоминаем последний известный ID письма от sso@mirea.ru
-            _, ids      = mail.search(None, f'FROM "{SENDER}"')
-            known_last  = ids[0].split()[-1] if ids[0] else None
+            _, ids     = mail.search(None, f'FROM "{SENDER}"')
+            known_last = ids[0].split()[-1] if ids[0] else None
 
             print(f"[{email_addr}] Ожидание новых писем (IMAP IDLE)...")
 
             while True:
-                # ── Отправляем IDLE ──
                 tag = mail._new_tag().decode()
                 mail.send(f"{tag} IDLE\r\n".encode())
 
-                # Читаем "+ idling" (подтверждение от сервера)
                 resp = mail.readline()
                 if b"+" not in resp:
                     raise ConnectionError(f"Сервер не поддерживает IDLE: {resp!r}")
 
-                # ── Ждём уведомление ──
-                # Сервер разрывает IDLE примерно через 30 мин → таймаут 29 мин
                 mail.socket().settimeout(29 * 60)
                 got_new = False
                 try:
@@ -99,18 +99,16 @@ def idle_worker(email_addr: str, password: str, row_idx: int, sheet_lock: thread
                         if b"BYE" in line:
                             raise ConnectionError("Сервер закрыл соединение (BYE)")
                 except socket.timeout:
-                    pass   # штатный таймаут — выходим и переотправим IDLE
+                    pass
                 finally:
                     mail.socket().settimeout(None)
 
-                # ── Выходим из IDLE ──
                 mail.send(b"DONE\r\n")
                 while True:
                     line = mail.readline()
                     if tag.encode() in line:
                         break
 
-                # ── Обрабатываем только если пришло что-то новое ──
                 if got_new:
                     _, ids = mail.search(None, f'FROM "{SENDER}"')
                     if ids[0]:
